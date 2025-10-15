@@ -3,7 +3,7 @@ from enum import Enum
 class Query(str, Enum):
     """Store queries"""
 
-    PREDICTED_DATA = "bmrs/api/v1/forecast/indicated/day-ahead"
+    PREDICTED_DATA = "bmrs/api/v1/forecast/indicated/day-ahead/history"
     """
     Day and day ahead predicted demand, supply, margin, inbalance
     updated every 30 mins.

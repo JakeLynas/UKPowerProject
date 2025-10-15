@@ -39,8 +39,7 @@ def forecasted_supply(date_from: str, date_to:str) -> pd.DataFrame:
     df = elexon_api(
         Query.PREDICTED_DATA.value,
         {
-            "publishDateTimeFrom": str(date_from),
-            "publishDateTimeTo": str(date_to),
+            "publishTime": str(date_to),
             }
         )
 
@@ -130,9 +129,6 @@ def get_supply_data(target_day: datetime.date, query_fn: Callable) -> pd.DataFra
             .groupby("startTime", as_index=False)
             .tail(1))
 
-    # Standardise columns
-    df["kind"] = "forecast"
-    df["horizon_hours"] = 24
     return df
 
 def get_demand_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
@@ -149,8 +145,6 @@ def get_demand_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
             .groupby("startTime", as_index=False)
             .tail(1))
 
-    df["kind"] = "actual"
-    df["horizon_hours"] = 0
     return df
 
 
@@ -193,18 +187,18 @@ def test_fetch():
     today_utc = datetime.date.today()
     start = today_utc - datetime.timedelta(days=7)
 
-    supply, demand = backfill_two_years(start, forecast_functions, DataTypes.FORECAST)
+    supply, demand = backfill_two_years(start, actual_functions, DataTypes.FORECAST)
 
-    save_joined(supply, outdir="data/test_out/supply")
-    save_joined(demand, outdir="data/test_out/demand")
+    save_joined(supply, outdir="data/test_out/supply/actual")
+    save_joined(demand, outdir="data/test_out/demand/actual")
 
 
 
 def save_joined(pairs: pd.DataFrame, outdir="data/out"):
     Path(outdir).mkdir(parents=True, exist_ok=True)
     if not pairs.empty:
-        pairs.to_parquet(Path(outdir)/"demand_pairs.parquet", index=False)
-        pairs.to_csv(Path(outdir)/"demand_pairs.csv", index=False)
+        pairs.to_parquet(Path(outdir)/"data.parquet", index=False)
+        pairs.to_csv(Path(outdir)/"data.csv", index=False)
     else:
         print("No data to save")
 
