@@ -7,16 +7,18 @@ from .constants_elexon import Query, DataTypes
 from .elexon_utils import iso_utc, each_day
 from collections.abc import Callable
 from pathlib import Path
+import logging
 
-def elexon_api(query: str, query_params: dict = {}) -> pd.DataFrame:
+def elexon_api(query: str, query_params: dict) -> pd.DataFrame:
     """Call elxon api for specific query"""
-
     url = f"https://data.elexon.co.uk/{query}"
+    print(query_params)
     if len(query_params):
-        url = urljoin(url, "?" + urlencode(query_params))
+        url = url + "?" + urlencode(query_params)
     hdr = {'Cache-Control': 'no-cache'}
 
     print(url)
+    
     req = urllib.request.Request(url, headers=hdr)
     response = urllib.request.urlopen(req)
     data = json.loads(response.read().decode("utf-8"))
@@ -56,12 +58,12 @@ def forecasted_supply(date_from: str, date_to:str) -> pd.DataFrame:
 
 def actual_supply(date_from: datetime.date, date_to:datetime.date) -> pd.DataFrame:
     """Query the actual supply between two published dates"""
-
+    print(f"Querying actual supply from {date_from} to {date_to}")
     df = elexon_api(
         Query.ACTUAL_SUPPLY.value,
         {
-            "publishDateTimeFrom": str(date_from),
-            "publishDateTimeTo": str(date_to),
+            "settlementDateFrom": str(date_from),
+            "settlementDateTo": str(date_to),
             }
     )
     df_agg = df.groupby(["publishTime", "startTime"], as_index=False)["generation"].sum()
@@ -75,8 +77,7 @@ def forecast_demand(date_from: datetime.date, date_to:datetime.date) -> pd.DataF
     df = elexon_api(
         Query.PREDICTED_DEMAND.value,
         {
-            "settlementDateFrom": str(date_from),
-            "settlementDateTo": str(date_to),
+            "publishTime": str(date_to),
             }
         )
 
@@ -110,7 +111,7 @@ def fetch_eod_window(query_fn: Callable, pub_day: datetime.date,
     return df
 
 
-def get_supply_data(target_day: datetime.date, query_fn: Callable) -> pd.DataFrame:
+def get_predicted_data(target_day: datetime.date, query_fn: Callable) -> pd.DataFrame:
     # Get publications on the previous day, EOD
     pub_day = target_day - datetime.timedelta(days=1)
     df = fetch_eod_window(query_fn, pub_day)
@@ -120,18 +121,16 @@ def get_supply_data(target_day: datetime.date, query_fn: Callable) -> pd.DataFra
         df = fetch_eod_window(query_fn, pub_day, "18:00:00", "23:59:59")
         if df.empty:
             return df
-
-    # Keep only forecast rows whose startTime falls on the target day
+        
     df = df[pd.to_datetime(df["startTime"], utc=True).dt.date == target_day]
 
-    # Deduplicate per startTime: keep the last (latest publish)
     df = (df.sort_values("publishTime")
             .groupby("startTime", as_index=False)
             .tail(1))
 
     return df
 
-def get_demand_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
+def get_actual_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
     df = query_fn(str(day), str(day))
     if df.empty:
         return df
@@ -140,7 +139,7 @@ def get_demand_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
 
-    # Keep the last publication per startTime
+
     df = (df.sort_values("publishTime")
             .groupby("startTime", as_index=False)
             .tail(1))
@@ -148,38 +147,35 @@ def get_demand_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
     return df
 
 
-def backfill_two_years(today_utc: datetime.date, function_pair: tuple[Callable, Callable], data_type: DataTypes) -> tuple[pd.DataFrame, pd.DataFrame]:
+def backfill_two_years(today_utc: datetime.date, function_pair: tuple[Callable, Callable], data_type: DataTypes) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     start = today_utc - datetime.timedelta(days=31)
-    all_supply, all_demand = [], []
+    all_supply_forecast, all_demand_forecast = [], []
+    all_supply_actual, all_demand_actual = [], []
 
     for d in each_day(start, today_utc):
-        # Day-ahead forecast for day d (published on d-1 EOD)
-        supply = get_supply_data(d, function_pair[0])
-        if not supply.empty:
-            supply["data_type"] = data_type.value
-            supply["horizon_hours"] = 24 if data_type == DataTypes.FORECAST else 0
-            all_supply.append(supply)
 
-        # Actual demand for day d (latest for each 30-min)
-        demand = get_demand_data(d, function_pair[1])
-        if not demand.empty:
-            demand["data_type"] = data_type.value
-            demand["horizon_hours"] = 24 if data_type == DataTypes.FORECAST else 0
-            all_demand.append(demand)
+        forecast_demand_data = get_predicted_data(d, forecast_demand)
+        actual_demand_data = get_actual_data(d, actual_demand)
 
-    supply = pd.concat(all_supply, ignore_index=True) if all_supply else pd.DataFrame()
-    demand = pd.concat(all_demand, ignore_index=True) if all_demand else pd.DataFrame()
+        forecasted_supply_data = get_predicted_data(d, forecasted_supply)
+        actual_supply_data = get_actual_data(d, actual_supply)
+            
+        all_supply_forecast.append(forecasted_supply_data)
+        all_demand_forecast.append(forecast_demand_data)    
+        all_supply_actual.append(actual_supply_data)
+        all_demand_actual.append(actual_demand_data)
 
-    return supply, demand
 
-    # Optional: left join forecast→actual on startTime for training pairs
-    if not fc.empty and not ac.empty:
-        pairs = (fc.merge(ac[["startTime","value"]]
-                          .rename(columns={"value":"actual_value"}),
-                          on="startTime", how="inner")
-                   .rename(columns={"value":"forecast_value"}))
-        return pairs, fc, ac
-    return pd.DataFrame(), fc, ac
+    all_supply_forecast = pd.concat(all_supply_forecast, ignore_index=True) if all_supply_forecast else pd.DataFrame()
+    all_demand_forecast = pd.concat(all_demand_forecast, ignore_index=True) if all_demand_forecast else pd.DataFrame()
+    all_supply_actual = pd.concat(all_supply_actual, ignore_index=True) if all_supply_actual else pd.DataFrame()
+    all_demand_actual = pd.concat(all_demand_actual, ignore_index=True) if all_demand_actual else pd.DataFrame()
+
+    print(f"Fetched {len(all_supply_forecast)} forecast supply rows, {len(all_demand_forecast)} forecast demand rows")
+    print(f"Fetched {len(all_supply_actual)} actual supply rows, {len(all_demand_actual)} actual demand rows")
+
+    return all_supply_forecast, all_demand_forecast, all_supply_actual, all_demand_actual
+
 
 def test_fetch():
     forecast_functions = (forecasted_supply, forecast_demand, ) 
@@ -187,10 +183,12 @@ def test_fetch():
     today_utc = datetime.date.today()
     start = today_utc - datetime.timedelta(days=7)
 
-    supply, demand = backfill_two_years(start, actual_functions, DataTypes.FORECAST)
+    all_supply_forecast, all_demand_forecast, all_supply_actual, all_demand_actual = backfill_two_years(start, actual_functions, DataTypes.FORECAST)
 
-    save_joined(supply, outdir="data/test_out/supply/actual")
-    save_joined(demand, outdir="data/test_out/demand/actual")
+    save_joined(all_supply_actual, outdir="data/test_out/supply/actual")
+    save_joined(all_demand_actual, outdir="data/test_out/demand/actual")
+    save_joined(all_supply_forecast, outdir="data/test_out/supply/forecast")
+    save_joined(all_demand_forecast, outdir="data/test_out/demand/forecast")
 
 
 

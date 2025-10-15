@@ -11,7 +11,7 @@ class Query(str, Enum):
     Add /stream for live data
     """
 
-    PREDICTED_DEMAND = "bmrs/api/v1/forecast/demand/day-ahead"
+    PREDICTED_DEMAND = "bmrs/api/v1/forecast/demand/day-ahead/history"
     """
     Day and day ahead predicted demand updated every 30 mins.
     Data is split into zones so group over publish and start times for UK level.
