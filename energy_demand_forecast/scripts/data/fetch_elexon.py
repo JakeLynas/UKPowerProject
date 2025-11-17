@@ -8,6 +8,7 @@ from .elexon_utils import iso_utc, each_day
 from collections.abc import Callable
 from pathlib import Path
 import logging
+from typing import Optional
 
 def elexon_api(query: str, query_params: dict) -> pd.DataFrame:
     """Call elxon api for specific query"""
@@ -147,8 +148,8 @@ def get_actual_data(day: datetime.date, query_fn: Callable) -> pd.DataFrame:
     return df
 
 
-def backfill_two_years(today_utc: datetime.date, function_pair: tuple[Callable, Callable], data_type: DataTypes) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    start = today_utc - datetime.timedelta(days=31)
+def backfill_two_years(today_utc: datetime.date, days: Optional[int] = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    start = today_utc - datetime.timedelta(days=days or 365*2)
     all_supply_forecast, all_demand_forecast = [], []
     all_supply_actual, all_demand_actual = [], []
 
@@ -178,13 +179,10 @@ def backfill_two_years(today_utc: datetime.date, function_pair: tuple[Callable, 
 
 
 def test_fetch():
-    forecast_functions = (forecasted_supply, forecast_demand, ) 
-    actual_functions = (actual_supply, actual_demand)
-    today_utc = datetime.date.today()
+
+    today_utc = datetime.date(2025,11,10)
     start = today_utc - datetime.timedelta(days=7)
-
-    all_supply_forecast, all_demand_forecast, all_supply_actual, all_demand_actual = backfill_two_years(start, actual_functions, DataTypes.FORECAST)
-
+    all_supply_forecast, all_demand_forecast, all_supply_actual, all_demand_actual = backfill_two_years(start, days=31)
     save_joined(all_supply_actual, outdir="data/test_out/supply/actual")
     save_joined(all_demand_actual, outdir="data/test_out/demand/actual")
     save_joined(all_supply_forecast, outdir="data/test_out/supply/forecast")

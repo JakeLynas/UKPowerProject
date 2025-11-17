@@ -49,9 +49,13 @@ def validate_day_counts(df: pd.DataFrame, series="demand"):
         print(f"⚠️ {series}: unexpected period counts detected (showing up to 10):")
         print(bad.head(10))
 
-def pivot_demand_wide(df: pd.DataFrame) -> pd.DataFrame:
+def pivot_wide(df: pd.DataFrame, series: str) -> pd.DataFrame:
+    """
+    Df contains both demand and supply series.
+    Pivot for columns: actual vs forecast
+    """
     # demand only → wide (columns: actual, forecast)
-    d = df[df["series"] == "demand"][["startTime","kind","value"]]
+    d = df[df["series"] == series][["startTime","kind","value"]]
     wide = d.pivot(index="startTime", columns="kind", values="value").reset_index()
     # normalize column names if categories carry order
     wide.columns.name = None
@@ -60,29 +64,6 @@ def pivot_demand_wide(df: pd.DataFrame) -> pd.DataFrame:
     if "forecast" not in wide: wide["forecast"] = np.nan
     return wide.sort_values("startTime")
 
-def add_features(wide: pd.DataFrame) -> pd.DataFrame:
-    # index on time for lag-safe ops
-    df = wide.sort_values("startTime").set_index("startTime")
-    # lags of actual
-    df["lag_48"] = df["actual"].shift(48)
-    df["lag_96"] = df["actual"].shift(96)
-    # weekly same-time rolling mean (past only)
-    df["roll7d_same_time"] = (
-        df["actual"].shift(48).rolling(window=48*7, min_periods=48*3).mean()
-    )
-    # calendar
-    df["hour"] = df.index.hour
-    df["dow"] = df.index.dayofweek
-    df["is_weekend"] = (df["dow"] >= 5).astype("int8")
-    # back to columns
-    df = df.reset_index()
-    # simple QC: drop impossible/negatives
-    for col in ("actual","forecast"):
-        df.loc[df[col] < 0, col] = np.nan
-    # drop rows missing target or core feature(s)
-    df = df.dropna(subset=["actual","forecast","lag_48"])
-    return df
-
 def temporal_split(df: pd.DataFrame, valid_frac=0.2):
     df = df.sort_values("startTime")
     cut = int(len(df) * (1 - valid_frac))
@@ -90,10 +71,12 @@ def temporal_split(df: pd.DataFrame, valid_frac=0.2):
 
 def save_outputs(demand_clean: pd.DataFrame,
                  demand_wide: pd.DataFrame,
-                 supply_clean: pd.DataFrame | None = None):
+                 supply_clean: pd.DataFrame,
+                 supply_wide: pd.DataFrame):
     (OUT_DIR / "tables").mkdir(exist_ok=True, parents=True)
     demand_clean.to_parquet(OUT_DIR / "tables" / "demand_clean.parquet", index=False)
     demand_wide.to_parquet(OUT_DIR / "tables" / "demand_wide.parquet", index=False)
+    supply_wide.to_parquet(OUT_DIR / "tables" / "supply_wide.parquet", index=False)
     if supply_clean is not None and not supply_clean.empty:
         supply_clean.to_parquet(OUT_DIR / "tables" / "supply_clean.parquet", index=False)
 
@@ -110,27 +93,25 @@ def run_preprocess_combined(in_path: Path = IN_PATH, valid_frac=0.2):
 
     # 5) supply/demand clean copies (optional save for later)
     supply_clean = combined[combined["series"] == "supply"].copy()
+    demand_clean = combined[combined["series"] == "demand"].copy()
 
     # 6) demand → wide (actual vs forecast)
-    demand_wide = pivot_demand_wide(combined)
+    demand_wide = pivot_wide(combined, "demand")
+    supply_wide = pivot_wide(combined, "supply")
 
-    # 7) features for modeling
-    demand_feats = add_features(demand_wide)
+    # 7) split
+    train_s, valid_s = temporal_split(supply_wide, valid_frac=valid_frac)
+    train_d, valid_d = temporal_split(demand_wide, valid_frac=valid_frac)
 
-    # 8) split
-    train, valid = temporal_split(demand_feats, valid_frac=valid_frac)
+    # 8) save results
+    save_outputs(demand_clean, demand_wide, supply_clean, supply_wide)
+    train_s.to_parquet(OUT_DIR / "train_supply.parquet", index=False)
+    valid_s.to_parquet(OUT_DIR / "valid_supply.parquet", index=False)
+    train_d.to_parquet(OUT_DIR / "train_demand.parquet", index=False)
+    valid_d.to_parquet(OUT_DIR / "valid_demand.parquet", index=False)
 
-    # 9) save results
-    save_outputs(demand_feats, demand_wide, supply_clean)
-    train.to_parquet(OUT_DIR / "train.parquet", index=False)
-    valid.to_parquet(OUT_DIR / "valid.parquet", index=False)
-
-    print(f"Saved: train={len(train)}, valid={len(valid)}, total={len(demand_feats)} rows")
-    return train, valid
-
-if __name__ == "__main__":
-    run_preprocess_combined()
-
+    print(f"Saved Supply: train={len(train_s)}, valid={len(valid_s)}, total={len(supply_wide)} rows")
+    print(f"Saved Demand: train={len(train_d)}, valid={len(valid_d)}, total={len(demand_wide)} rows")
 
 def combine_series_data(
     base_dir: str | Path = "data/test_out",
@@ -191,15 +172,19 @@ def combine_series_data(
     return combined
 
 
-# if __name__ == "__main__":
-#     #run_preprocess()
-#     combined = combine_series_data("data/test_out")
-#     print(combined.head())
-#     print(combined["series"].value_counts())
-#     print(combined["kind"].value_counts())
+if __name__ == "__main__":
 
-#     # Save for easy reuse
-#     out_path = Path("data/processed/combined")
-#     out_path.parent.mkdir(parents=True, exist_ok=True)
-#     combined.to_parquet(f"{out_path}.parquet", index=False)
-#     combined.to_csv(f"{out_path}.csv", index=False)
+    combined = combine_series_data("data/test_out")
+    print(combined.head())
+    print(combined["series"].value_counts())
+    print(combined["kind"].value_counts())
+
+    # Save for easy reuse
+    out_path = Path("data/processed/combined")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(f"{out_path}.parquet", index=False)
+    combined.to_csv(f"{out_path}.csv", index=False)
+
+    run_preprocess_combined()
+
+
